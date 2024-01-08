@@ -1,87 +1,151 @@
+/// Import the necessary libraries:
+
 import Principal "mo:base/Principal";
 import Timer "mo:base/Timer";
 import Debug "mo:base/Debug";
 import List "mo:base/List";
 
-/// Backend server actor for the auction platform
+
+/// Next, define the actor fort he auction platform:
+
 actor {
-  /// Auction item. Shared type.
+  /// Define an item for the auction: 
   type Item = {
-    /// Auction title
+    /// Define a title for the auction:
     title : Text;
-    /// Auction description
+    /// Define a description for the auction:
     description : Text;
-    /// Image binary data, currently only PNG supported.
+    /// Define an image used as an icon for the auction:
     image : Blob;
   };
 
-  /// Auction bid. Shared type.
+  /// Define the auction's bid:
   type Bid = {
-    /// Price in the unit of the currency (ICP).
+    /// Define the price for the bid using ICP as the currency:
     price : Nat;
-    /// Point in time of the bid, measured as the
-    /// remaining until the closing of the auction.
+    /// Define the time the bid was placed, measured as the time remaining in the auction: 
     time : Nat;
-    /// Authenticated user id of this bid.
+    /// Define the authenticated user ID of the bid:
     originator : Principal.Principal;
   };
 
-  /// Auction identifier that is generated and associated
-  /// by the actor to later retrieve an auction.
-  /// Shared type.
+  /// Define an auction ID to uniquely identify the auction:
   type AuctionId = Nat;
 
-  /// Reduced information of an auction. Shared type.
+  /// Define an auction overview:
   type AuctionOverview = {
-    /// Id associated to the auction serving for retrieval.
     id : AuctionId;
-    /// Item sold in the auction.
+    /// Define the auction sold at the item:
     item : Item;
   };
 
-  /// Detailed information of an auction. Shared type.
+  /// Define the details of the auction:
   type AuctionDetails = {
-    /// Item sold in the auction.
+    /// Item sold in the auction:
     item : Item;
-    /// Series of valid bids in this auction, sorted by price.
+    /// Bids submitted in the auction:
     bidHistory : [Bid];
-    /// Remaining time until the end of the auction.
-    /// `0` means that the auction is closed.
-    /// The last entry in `bidHistory`, if existing, denotes
+    /// Time remaining in the auction:
     /// the auction winner.
     remainingTime : Nat;
   };
 
-  /// Register a new auction that is open for the defined duration.
+  /// Define an internal, non-shared type for storing info about the auction:
+  type Auction = {
+    id : AuctionId;
+    item : Item;
+    var bidHistory : List.List<Bid>;
+    var remainingTime : Nat;
+  };
+
+  /// Create a stable variable to store the auctions:
+  stable var auctions = List.nil<Auction>();
+  /// Define a counter for generating new auction IDs.
+  stable var idCounter = 0;
+
+  /// Define a timer that occurs every second, used to define the time remaining in the open auction:
+  func tick() : async () {
+    for (auction in List.toIter(auctions)) {
+      if (auction.remainingTime > 0) {
+        auction.remainingTime -= 1;
+      };
+    };
+  };
+
+  /// Install a timer: 
+  let timer = Timer.recurringTimer(#seconds 1, tick);
+
+  /// Define a function to generating a new auction:
+  func newAuctionId() : AuctionId {
+    let id = idCounter;
+    idCounter += 1;
+    id;
+  };
+
+  /// Define a function to register a new auction that is open for the defined duration:
   public func newAuction(item : Item, duration : Nat) : async () {
-    // TODO: Implementation
-    Debug.trap("not yet implemented");
+    let id = newAuctionId();
+    let bidHistory = List.nil<Bid>();
+    let newAuction = { id; item; var bidHistory; var remainingTime = duration };
+    auctions := List.push(newAuction, auctions);
   };
 
-  /// Retrieve all auctions (open and closed) with their ids and reduced overview information.
-  /// Specific auctions can be separately retrieved by `getAuctionDetail`.
-  public func getOverviewList() : async [AuctionOverview] {
-    // TODO: Implementation
-    [];
+  /// Define a function to retrieve all auctions: 
+  /// Specific auctions can be separately retrieved by `getAuctionDetail`:
+  public query func getOverviewList() : async [AuctionOverview] {
+    func getOverview(auction : Auction) : AuctionOverview = {
+      id = auction.id;
+      item = auction.item;
+    };
+    let overviewList = List.map<Auction, AuctionOverview>(auctions, getOverview);
+    List.toArray(List.reverse(overviewList));
   };
 
-  /// Retrieve the detail information of auction by its id.
-  /// The returned detail contain status about whether the auction is active or closed,
-  /// and the bids make so far.
-  public func getAuctionDetails(auctionId : AuctionId) : async AuctionDetails {
-    // TODO: Implementation
-    Debug.trap("not yet implemented");
+  /// Define an internal helper function to retrieve auctions by ID: 
+  func findAuction(auctionId : AuctionId) : Auction {
+    let result = List.find<Auction>(auctions, func auction = auction.id == auctionId);
+    switch (result) {
+      case null Debug.trap("Inexistent id");
+      case (?auction) auction;
+    };
   };
 
-  /// Make a new bid for a specific auction specified by the id.
+  /// Define a function to retrieve detailed info about an auction using its ID: 
+  public query func getAuctionDetails(auctionId : AuctionId) : async AuctionDetails {
+    let auction = findAuction(auctionId);
+    let bidHistory = List.toArray(List.reverse(auction.bidHistory));
+    { item = auction.item; bidHistory; remainingTime = auction.remainingTime };
+  };
+
+  /// Define an internal helper function to retrieve the minimum price for an auction's next bid; the next bid must be one unit of currency larger than the last bid: 
+  func minimumPrice(auction : Auction) : Nat {
+    switch (auction.bidHistory) {
+      case null 1;
+      case (?(lastBid, _)) lastBid.price + 1;
+    };
+  };
+
+  /// Make a new bid for a specific auction specified by the ID:
   /// Checks that:
   /// * The user (`message.caller`) is authenticated.
   /// * The price is valid, higher than the last bid, if existing.
-  /// * The auction is still open (not finished).
+  /// * The auction is still open.
   /// If valid, the bid is appended to the bid history.
   /// Otherwise, traps with an error.
   public shared (message) func makeBid(auctionId : AuctionId, price : Nat) : async () {
-    // TODO: Implementation
-    Debug.trap("not yet implemented");
+    let originator = message.caller;
+    if (Principal.isAnonymous(originator)) {
+      Debug.trap("Anonymous caller");
+    };
+    let auction = findAuction(auctionId);
+    if (price < minimumPrice(auction)) {
+      Debug.trap("Price too low");
+    };
+    let time = auction.remainingTime;
+    if (time == 0) {
+      Debug.trap("Auction closed");
+    };
+    let newBid = { price; time; originator };
+    auction.bidHistory := List.push(newBid, auction.bidHistory);
   };
 };
